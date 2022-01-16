@@ -592,6 +592,7 @@ class SeqModel(nn.Module):
     dropout: float = 0.2
     training: bool = True
     classification: bool = False
+    regression: bool = False
 
     def setup(self):
         self.encoder = nn.Dense(self.d_model)
@@ -614,7 +615,10 @@ class SeqModel(nn.Module):
         if self.classification:
             x = np.mean(x, axis=0)
         x = self.decoder(x)
-        return nn.log_softmax(x, axis=-1)
+        if self.regression:
+            return x
+        else:
+            return nn.log_softmax(x, axis=-1)
 
 
 BatchSeqModel = nn.vmap(

@@ -32,6 +32,11 @@ def compute_accuracy(logits, label):
     return np.argmax(logits) == label
 
 
+@partial(np.vectorize, signature="(c),()->()")
+def mse_loss(logits, label):
+    return -np.sum(np.square(label - logits))
+
+
 # As we're using Flax, we also write a utility function to return a default TrainState object.
 # This function initializes model parameters, as well as our optimizer. Note that for S4 models,
 # we use a custom learning rate for parameters of the S4 kernel (lr = 0.001, no weight decay).
@@ -118,7 +123,7 @@ def create_train_state(
 # We define the step functions on a model-specific basis below.
 
 
-def train_epoch(state, rng, model, trainloader, classification=False):
+def train_epoch(state, rng, model, trainloader, classification=False, regression=False):
     # Store Metrics
     model = model(training=True)
     batch_losses = []
@@ -133,6 +138,7 @@ def train_epoch(state, rng, model, trainloader, classification=False):
             labels,
             model,
             classification=classification,
+            regression=regression,
         )
         batch_losses.append(loss)
 
@@ -140,7 +146,7 @@ def train_epoch(state, rng, model, trainloader, classification=False):
     return state, np.mean(np.array(batch_losses))
 
 
-def validate(params, model, testloader, classification=False):
+def validate(params, model, testloader, classification=False, regression=False):
     # Compute average loss & accuracy
     model = model(training=False)
     losses, accuracies = [], []
@@ -148,7 +154,7 @@ def validate(params, model, testloader, classification=False):
         inputs = np.array(inputs.numpy())
         labels = np.array(labels.numpy())  # Not the most efficient...
         loss, acc = eval_step(
-            inputs, labels, params, model, classification=classification
+            inputs, labels, params, model, classification=classification, regression=regression
         )
         losses.append(loss)
         accuracies.append(acc)
@@ -181,9 +187,9 @@ class FeedForwardModel(nn.Module):
 # calls will become increasingly important as we optimize S4.
 
 
-@partial(jax.jit, static_argnums=(4, 5))
+@partial(jax.jit, static_argnums=(4, 5, 6))
 def train_step(
-    state, rng, batch_inputs, batch_labels, model, classification=False
+    state, rng, batch_inputs, batch_labels, model, classification=False, regression=False
 ):
     def loss_fn(params):
         if classification:
@@ -201,7 +207,10 @@ def train_step(
                 rngs={"dropout": rng},
                 mutable=["intermediates"],
             )
-            loss = np.mean(cross_entropy_loss(logits, batch_inputs[:, 1:, 0]))
+            if regression:
+                loss = np.mean(mse_loss(logits, batch_inputs[:, 1:, 0]))
+            else:
+                loss = np.mean(cross_entropy_loss(logits, batch_inputs[:, 1:, 0]))
         return loss, logits
 
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
@@ -210,16 +219,20 @@ def train_step(
     return state, loss
 
 
-@partial(jax.jit, static_argnums=(3, 4))
-def eval_step(batch_inputs, batch_labels, params, model, classification=False):
+@partial(jax.jit, static_argnums=(3, 4, 5))
+def eval_step(batch_inputs, batch_labels, params, model, classification=False, regression=False):
     if classification:
         logits = model.apply({"params": params}, batch_inputs)
         loss = np.mean(cross_entropy_loss(logits, batch_labels))
         acc = np.mean(compute_accuracy(logits, batch_labels))
     else:
         logits = model.apply({"params": params}, batch_inputs[:, :-1])
-        loss = np.mean(cross_entropy_loss(logits, batch_inputs[:, 1:, 0]))
-        acc = np.mean(compute_accuracy(logits, batch_inputs[:, 1:, 0]))
+        if regression:
+            loss = np.mean(mse_loss(logits, batch_inputs[:, 1:, 0]))
+            acc = 0
+        else:
+            loss = np.mean(cross_entropy_loss(logits, batch_inputs[:, 1:, 0]))
+            acc = np.mean(compute_accuracy(logits, batch_inputs[:, 1:, 0]))
     return loss, acc
 
 
@@ -288,6 +301,7 @@ def example_train(
 
     # Check if classification dataset
     classification = "classification" in dataset
+    regression = "librispeech" == dataset
 
     # Create dataset...
     trainloader, testloader, n_classes, seq_len, in_dim = create_dataset_fn(
@@ -304,6 +318,7 @@ def example_train(
         n_layers=n_layers,
         l_max=seq_len if classification else seq_len - 1,
         classification=classification,
+        regression=regression,
     )
     state = create_train_state(
         model,
@@ -327,11 +342,12 @@ def example_train(
             model_cls,
             trainloader,
             classification=classification,
+            regression=regression
         )
 
         print(f"[*] Running Epoch {epoch + 1} Validation...")
         test_loss, test_acc = validate(
-            state.params, model_cls, testloader, classification=classification
+            state.params, model_cls, testloader, classification=classification, regression=regression
         )
 
         print(f"\n=>> Epoch {epoch + 1} Metrics ===")

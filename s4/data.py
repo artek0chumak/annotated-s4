@@ -2,6 +2,7 @@ import os
 import jax
 import numpy as np
 import torch
+import torchaudio
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import TensorDataset, random_split
@@ -286,6 +287,45 @@ def create_cifar_classification_dataset(bsz=128):
     return trainloader, testloader, N_CLASSES, SEQ_LENGTH, IN_DIM
 
 
+# ### LibriSpeech
+def create_librispeech_dataset(bsz=128):
+    print("[*] Generating LibriSpeech Sequence Modeling Dataset...")
+
+    # Constants
+    resample_rate = 22500
+    seconds = 10
+    SEQ_LENGTH, N_CLASSES, IN_DIM = resample_rate * seconds, 1, 1
+
+    def collate_fn(batch):
+        placeholder = torch.zeros((len(batch), resample_rate * seconds, 1))
+        for idx, item in enumerate(batch):
+            waveform = item[0]
+            sample_rate = item[1]
+            resample = torchaudio.transforms.Resample(sample_rate, resample_rate, dtype=waveform.dtype)
+
+            new_waveform = resample(waveform)
+            new_len = min(new_waveform.size(1), resample_rate * seconds)
+            placeholder[idx, :new_len, 0] += new_waveform[0, :new_len]
+        return placeholder, torch.zeros((len(batch),))
+
+    train = torchaudio.datasets.LIBRISPEECH(
+        "./data", url="train-clean-100", download=True,
+    )
+
+    test = torchaudio.datasets.LIBRISPEECH(
+        "./data", url="dev-clean", download=True,
+    )
+
+    trainloader = torch.utils.data.DataLoader(
+        train, batch_size=bsz, shuffle=True, collate_fn=collate_fn
+    )
+    testloader = torch.utils.data.DataLoader(
+        test, batch_size=bsz, shuffle=False, collate_fn=collate_fn
+    )
+
+    return trainloader, testloader, N_CLASSES, SEQ_LENGTH, IN_DIM
+
+
 Datasets = {
     "mnist": create_mnist_dataset,
     "quickdraw": create_quickdraw_dataset,
@@ -293,4 +333,5 @@ Datasets = {
     "sin_noise": create_sin_ax_b_dataset,
     "mnist-classification": create_mnist_classification_dataset,
     "cifar-classification": create_cifar_classification_dataset,
+    "librispeech": create_librispeech_dataset,
 }
