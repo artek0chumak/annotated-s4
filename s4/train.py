@@ -34,7 +34,7 @@ def compute_accuracy(logits, label):
 
 @partial(np.vectorize, signature="(c),()->()")
 def mse_loss(logits, label):
-    return -np.sum(np.square(label - logits))
+    return np.sum(np.square(label - logits))
 
 
 # As we're using Flax, we also write a utility function to return a default TrainState object.
@@ -127,7 +127,8 @@ def train_epoch(state, rng, model, trainloader, classification=False, regression
     # Store Metrics
     model = model(training=True)
     batch_losses = []
-    for batch_idx, (inputs, labels) in enumerate(tqdm(trainloader)):
+    pbar = tqdm(trainloader)
+    for batch_idx, (inputs, labels) in enumerate(pbar):
         inputs = np.array(inputs.numpy())
         labels = np.array(labels.numpy())  # Not the most efficient...
         rng, drop_rng = jax.random.split(rng)
@@ -141,6 +142,7 @@ def train_epoch(state, rng, model, trainloader, classification=False, regression
             regression=regression,
         )
         batch_losses.append(loss)
+        pbar.set_description(f"Loss: {loss}")
 
     # Return average loss over batches
     return state, np.mean(np.array(batch_losses))
